@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         微软积分商城签到（重构版）
 // @version      1.0.3
-// @description  每天在后台自动完成 Microsoft Rewards 任务获取积分奖励，✅签入(PC+App静默)、✅阅读、✅活动、✅搜索、✅Quiz、✅拼图、✅热搜API、✅二次扫描、✅积分通知、✅连签任务检测、✅每日活动自动上报
+// @description  每天在后台自动完成 Microsoft Rewards 任务获取积分奖励，✅App静默签到、✅PC搜索打卡、✅阅读、✅活动、✅搜索、✅Quiz、✅拼图、✅热搜API、✅二次扫描、✅积分通知、✅连签任务检测、✅每日活动自动上报
 // @author       kunkun
 // @namespace    https://scriptcat.org/users/212527
 // @icon         https://rewards.bing.com/rewardscdn/images/rewards/rewards-icon-96.png
@@ -514,6 +514,17 @@ Notice:
         try { visit(JSON.parse(record[1])); } catch (_) {}
       }
       return { tasks: [...tasks.values()], bonus };
+    },
+
+    // 官网 PC 打卡对应 bing 搜索连续打卡，App 对应 bingapp；未下发时保留未知。
+    signInProgress(tasks) {
+      const completed = partner => {
+        const task = tasks.find(item => item.partner === partner && item.isEnabled);
+        if (!task) return null;
+        return task.isCurrentDayCompleted === true ||
+          (task.activitiesTotal > 0 && task.activitiesCompleted >= task.activitiesTotal);
+      };
+      return { app: completed("bingapp"), pc: completed("bing") };
     }
   };
 
@@ -723,7 +734,7 @@ Notice:
    * @property {number|null} startBalance 初始余额，未知为 null。
    * @property {number|null} endBalance 结束余额，无效时取 info.balance。
    * @property {number} today 本轮本地日期，YYYYMMDD。
-   * @property {{signDate: number, readDate: number, promosDate: number, streakDays: number}} tasks 任务日期与连签天数。
+   * @property {{signDate: number, appSignDate: number, pcSignDate: number, readDate: number, promosDate: number, streakDays: number}} tasks 任务日期与连签天数。
    * @property {SearchProgress} read 阅读进度的兜底值。
    * @property {boolean} promosEnabled 活动卡片开关。
    */
@@ -750,7 +761,9 @@ Notice:
       const readMax = Number.isFinite(info.readMax) && info.readMax > 0
         ? info.readMax : read.max;
 
-      let logMsg = `签到\t\t${signOk ? '✅' : '❌'}\n`;
+      const signStatus = signOk ? "✅"
+        : `⏳ App ${tasks.appSignDate === today ? "已完成" : "待确认"} / PC ${tasks.pcSignDate === today ? "已完成" : "待确认"}`;
+      let logMsg = `签到\t\t${signStatus}\n`;
       logMsg += `阅读\t\t${readOk ? '✅' : '❌'} ${readProgress}/${readMax}\n`;
       logMsg += `PC 搜索\t${searchKnown ? `${searchOk ? '✅' : '⏳'} ${info.pc.progress}/${info.pc.max}` : '⏳ 配额未确认'}\n`;
       logMsg += `活动卡片\t${!promosEnabled ? '已关闭' : promosOk ? '✅' : '⏳ 未完成/待确认'}\n`;
@@ -764,6 +777,7 @@ Notice:
   // 任务日期、重试次数和卡片尝试记录。
   const TaskState = {
     signDate: 0, readDate: 0, promosDate: 0, searchDate: 0, streakDays: 0,
+    appSignDate: 0, pcSignDate: 0,
     signPoint: -1, signTimes: 0, readTimes: 0,
     cardAttempted: new Set(), cardResults: new Map()
 
@@ -2907,7 +2921,7 @@ Notice:
     }
   };
 
-  // 活动提交与响应解析，供 PC 签到和 Dashboard 领取使用。
+  // 活动响应解析，供 Dashboard 领取等流程使用。
   const ActivityService = {
     // 返回成功、失败或未知，完成判定由调用方决定。
     activityResponseResult(response, serverAction = false) {
@@ -2996,72 +3010,31 @@ Notice:
 
       // 非 RSC 响应按 JSON 或文本标记解析。
       return inspect(response);
-    },
-
-    async getRequestVerificationToken(pageUrl = "https://rewards.bing.com/") {
-      // 仅从 Rewards 来源页取 Token，不能使用卡片目标站点。
-      try {
-        const sourceUrl = new URL(pageUrl, "https://rewards.bing.com/");
-        if (sourceUrl.origin !== "https://rewards.bing.com") {
-          throw new Error("验证令牌只能从 Rewards 来源页获取");
-        }
-        const html = await HttpClient.text({
-          url: sourceUrl.href,
-          headers: {
-            "user-agent": RewardsAuto.ua.pc,
-            "referer": "https://rewards.bing.com/"
-          },
-          anonymous: false
-        });
-        const tokenMatch = html.match(/name=["']__RequestVerificationToken["'][^>]*value=["']([^"']+)["']/i)
-          || html.match(/RequestVerificationToken.*?value=["']([^"']+)["']/i)
-          || html.match(/"verificationToken"\s*:\s*"([^"]+)"/i)
-          || html.match(/"__RequestVerificationToken"\s*:\s*"([^"]+)"/i);
-        return tokenMatch ? tokenMatch[1].replace(/&amp;/g, "&") : "";
-      } catch (e) {
-        if (RunGuard.isStopError(e)) throw e;
-        Notice.log("🟡", `活动Token获取失败: ${e.message}`);
-        return "";
-      }
-    },
-
-    // 取来源页令牌后提交，响应由业务调用方解释。
-    async reportActivity(offerId, hash, referer = "https://rewards.bing.com/") {
-      const sourceUrl = new URL(referer, "https://rewards.bing.com/");
-      if (sourceUrl.origin !== "https://rewards.bing.com") {
-        throw new Error("活动提交来源必须是 Rewards 页面");
-      }
-      const source = sourceUrl.href;
-      const token = await this.getRequestVerificationToken(source);
-      if (!token) throw new Error("来源页未提供 RequestVerificationToken");
-      const params = new URLSearchParams({
-        id: offerId,
-        hash: hash || "1",
-        activityAmount: "1"
-      });
-      if (token) params.set("__RequestVerificationToken", token);
-
-      const headers = {
-        "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "user-agent": RewardsAuto.ua.pc,
-        "referer": source,
-        "origin": "https://rewards.bing.com",
-        "x-requested-with": "XMLHttpRequest"
-      };
-      if (token) headers["RequestVerificationToken"] = token;
-
-      return await HttpClient.text({
-        method: "POST",
-        url: "https://rewards.bing.com/api/reportactivity?X-Requested-With=XMLHttpRequest",
-        headers,
-        data: params.toString(),
-        anonymous: false
-      });
     }
   };
 
-  // 签到接口：返回积分供任务层判定，失败为 -1。
+  // App 签到返回新增积分；PC 打卡读取官网 bing 连签状态，由搜索流程完成。
   const AppSignIn = {
+    async readDailyProgress() {
+      try {
+        const response = await HttpClient.text({
+          url: "https://rewards.bing.com/earn", fullResponse: true,
+          headers: { "cache-control": "no-cache", "user-agent": RewardsAuto.ua.pc }
+        });
+        const source = new URL(response.finalUrl || "https://rewards.bing.com/earn");
+        if (source.origin !== "https://rewards.bing.com" ||
+            !/^\/(?:earn|dashboard)\/?$/.test(source.pathname) ||
+            response.status < 200 || response.status >= 300) {
+          throw new Error("Rewards 页面未返回可核验的当日打卡数据");
+        }
+        return DataParsers.signInProgress(DataParsers.parseStreakData(response.responseText).tasks);
+      } catch (e) {
+        if (RunGuard.isStopError(e)) throw e;
+        Notice.log("🟡", `签到状态暂未确认: ${e.message}`);
+        return { app: null, pc: null };
+      }
+    },
+
     async signApp() {
       const region = Utils.isRegionLockEnabled() ? "cn" : RunState.region.toLowerCase();
       try {
@@ -3089,25 +3062,6 @@ Notice:
       } catch (e) {
         if (RunGuard.isStopError(e)) throw e;
         Notice.log("🔴", `App签入失败: ${e.message}`);
-      }
-      return -1;
-    },
-
-    // 已知兼容限制（用户确认，2026-10-01）：PC 签到暂保留现有判定。
-    // JSON 无积分时按 0 分记完成，success:false 也可能误判。
-    // 收紧前需实测成功、重复及失败响应，保留 0 分兼容。
-    async signPC() {
-      try {
-        const res = await ActivityService.reportActivity("Gamification_DailyCheckIn", "1", "https://rewards.bing.com/");
-        if (Utils.isJSON(res)) {
-          const data = JSON.parse(res);
-          RunState.pc401 = false;
-          return Number(data.points || data.response?.activity?.p || 0);
-        }
-      } catch (e) {
-        if (RunGuard.isStopError(e)) throw e;
-        if (e.message?.includes("401")) RunState.pc401 = true;
-        Notice.log("🟡", `PC签入失败: ${e.message}`);
       }
       return -1;
     }
@@ -3500,15 +3454,21 @@ Notice:
   const TaskRecords = {
     load(target) {
       const tasks = Storage.get("Config.tasks", {});
-      target.signDate = tasks.sign || 0;
+      const today = RunState.dateNowNum || Utils.getTodayNum();
+      target.appSignDate = tasks.signApp || 0;
+      target.pcSignDate = tasks.signPC || 0;
+      // 旧版本只保存任一端成功的 sign 日期，不能作为两端都完成的依据。
+      target.signDate = target.appSignDate === today && target.pcSignDate === today ? today : 0;
       target.readDate = tasks.read || 0;
       target.promosDate = tasks.promos || 0;
       target.searchDate = tasks.search || 0;
       target.streakDays = tasks.streakDays || 0;
-      target.signPoint = Storage.get("Config.signPoint", -1);
+      target.signPoint = target.appSignDate === today
+        ? DataParsers.accountBalance(Storage.get("Config.signPoint", -1)) ?? 0 : -1;
       target.signTimes = target.readTimes = 0;
       target.savedTasks = {
-        sign: tasks.sign || 0, read: tasks.read || 0, promos: tasks.promos || 0,
+        sign: tasks.sign || 0, signApp: tasks.signApp || 0, signPC: tasks.signPC || 0,
+        read: tasks.read || 0, promos: tasks.promos || 0,
         search: tasks.search || 0, streakDays: tasks.streakDays || 0
       };
     },
@@ -3516,7 +3476,8 @@ Notice:
     save(target) {
       RunGuard.assertActive();
       const values = {
-        sign: target.signDate, read: target.readDate, promos: target.promosDate,
+        sign: target.signDate, signApp: target.appSignDate, signPC: target.pcSignDate,
+        read: target.readDate, promos: target.promosDate,
         search: target.searchDate, streakDays: target.streakDays
       };
       const changes = {};
@@ -3531,56 +3492,59 @@ Notice:
     saveSignPoint(value) {
       RunGuard.assertActive();
       Storage.set("Config.signPoint", value);
+    },
+
+    // 未知状态保留已确认记录；明确未完成则撤回对应日期。
+    updateSignProgress(target, progress) {
+      RunGuard.assertActive();
+      const today = RunState.dateNowNum;
+      if (typeof progress.app === "boolean") target.appSignDate = progress.app ? today : 0;
+      if (typeof progress.pc === "boolean") target.pcSignDate = progress.pc ? today : 0;
+      target.signDate = target.appSignDate === today && target.pcSignDate === today ? today : 0;
+      if (target.appSignDate !== today) target.signPoint = -1;
+      else if (target.signPoint < 0) target.signPoint = 0;
+      this.saveSignPoint(target.signPoint);
+      this.save(target);
     }
   };
 
   // 任务执行：更新状态并返回结果。
   const TaskActions = {
-    // App 或 PC 返回非负积分即记完成；PC 限制见 signPC。
+    // 先核验官网当日状态；PC 未完成时交给后续搜索，不重复调用旧签到接口。
     async doSign() {
       if (!Storage.get("Tasks.sign", true)) return TaskResult.create("skipped", "sign_disabled");
       if (TaskState.signTimes > 2) return TaskResult.create("failed", "sign_attempts_exhausted");
-      if (TaskState.signPoint >= 0 && TaskState.signDate === RunState.dateNowNum) {
-        Notice.log("✅", `签入已完成(${TaskState.signPoint}积分)`);
-        return TaskResult.create("completed", "sign_already_completed");
-      }
+      const progress = await AppSignIn.readDailyProgress();
+      TaskRecords.updateSignProgress(TaskState, progress);
 
-      await Wait.randomDelay();
-
-      let totalPoint = 0;
-      let signOk = false;
-
-      const appPoint = await AppSignIn.signApp();
-      if (appPoint >= 0) {
-        signOk = true;
-        if (appPoint > 0) {
-          Platform.log(`📱 App签入静默成功 +${appPoint}积分`);
-          totalPoint += appPoint;
-        } else {
-          Platform.log("📱 App签入已确认，无新增积分");
+      if (TaskState.appSignDate === RunState.dateNowNum) {
+        Notice.log("📱", "App签入已确认，跳过重复提交");
+      } else {
+        await Wait.randomDelay();
+        const appPoint = await AppSignIn.signApp();
+        if (Number.isFinite(appPoint) && appPoint >= 0) {
+          TaskState.signPoint = appPoint;
+          TaskRecords.updateSignProgress(TaskState, { app: true });
+          Notice.log("📱", appPoint > 0 ? `App签入静默成功 +${appPoint}积分` : "App签入已确认，无新增积分");
         }
       }
 
-      await Wait.randomDelay(3000, 8000);
-      const pcPoint = await AppSignIn.signPC();
-      if (pcPoint >= 0) {
-        signOk = true;
-        Notice.log("💻", `PC签入成功！+${pcPoint}积分`);
-        totalPoint += pcPoint;
+      if (TaskState.pcSignDate === RunState.dateNowNum) {
+        Notice.log("💻", "PC打卡已由官网确认完成（必应搜索连续打卡）");
+      } else {
+        Notice.log("📅", progress.pc === false
+          ? "PC打卡尚未完成，搜索结束后复核"
+          : "PC打卡状态暂未确认，搜索结束后复核");
       }
 
-      if (signOk) {
-        TaskState.signPoint = totalPoint;
-        TaskState.signDate = RunState.dateNowNum;
-        TaskRecords.saveSignPoint(totalPoint);
-        TaskRecords.save(TaskState);
-        Notice.log("🔵", `签入任务完成！总积分 +${totalPoint}`, true);
+      if (TaskState.signDate === RunState.dateNowNum) {
+        Notice.log("🔵", "App签到与PC打卡均已确认完成", true);
         return TaskResult.create("completed", "sign_confirmed");
-      } else {
-        TaskState.signTimes++;
-        Notice.log("🟡", `签入失败，稍后重试`);
-        return TaskResult.create("failed", "sign_failed", true);
       }
+      // PC 打卡依赖搜索；不在搜索前反复等待重试。
+      if (TaskState.appSignDate === RunState.dateNowNum) return TaskResult.create("pending", "pc_sign_waiting_search");
+      TaskState.signTimes++;
+      return TaskResult.create("unknown", "app_sign_unconfirmed", true);
     },
 
     // 阅读完成日期须经服务器进度复核。
@@ -3948,7 +3912,9 @@ Notice:
     async doStreak() {
       Notice.log("📅", "开始检测连签任务...");
       try {
-        const earnHtml = await HttpClient.text({ url: "https://rewards.bing.com/earn" });
+        const earnHtml = await HttpClient.text({
+          url: "https://rewards.bing.com/earn", headers: { "cache-control": "no-cache" }
+        });
         if (!earnHtml) {
           Notice.log("🟡", "无法获取 earn 页面");
           return TaskResult.create("unknown", "streak_page_unavailable");
@@ -3958,6 +3924,14 @@ Notice:
         if (!tasks.length) {
           Notice.log("🟡", "未取得可识别的连签任务数据，跳过视觉搜索开页");
           return TaskResult.create("unknown", "streak_tasks_unavailable");
+        }
+
+        if (Storage.get("Tasks.sign", true)) {
+          const pcWasDone = TaskState.pcSignDate === RunState.dateNowNum;
+          TaskRecords.updateSignProgress(TaskState, DataParsers.signInProgress(tasks));
+          if (!pcWasDone && TaskState.pcSignDate === RunState.dateNowNum) {
+            Notice.log("💻", "PC打卡已由官网确认完成（搜索后复核）");
+          }
         }
 
         const taskMeta = {
@@ -4089,11 +4063,10 @@ Notice:
   const TaskManager = {
     startTimer: null,
 
-    // 加载本轮日期和任务记录，重置 PC 401 与阅读进度。
+    // 加载本轮日期和任务记录，重置阅读进度。
     init() {
       RunState.dateNowNum = Utils.getTodayNum();
       RunState.dateNowStr = Utils.getTodayStr();
-      RunState.pc401 = false;
       ReadingState.progress = 0;
       ReadingState.max = 30;
       TaskRecords.load(TaskState);
@@ -4189,10 +4162,10 @@ Notice:
       TaskState.cardResults.clear();
       CardService.beginCardRun();
 
-      // App Token 失败时仍尝试 PC 签到。
+      // App Token 失败时仍核验网页打卡状态。
       const isTokenOK = await AppTokenSession.renewToken();
       if (!isTokenOK) {
-        Notice.log("🟡", "App Token 未就绪，仍尝试 PC 签到，跳过阅读", true);
+        Notice.log("🟡", "App Token 未就绪，仍核验网页打卡状态，跳过阅读", true);
       }
 
       // 检查网页会话后记录初始余额，必要时使用其他数据源。
@@ -4201,16 +4174,12 @@ Notice:
       const startBalance = DataParsers.accountBalance(await RewardsQuery.getBalance());
       Notice.log("📊", `初始积分: ${startBalance ?? "未确认"}`);
 
-      // 签到均尝试；阅读须有 Token 且 PC 未报 401。
+      // 先核验签到；阅读仅依赖 App Token，PC 打卡在搜索后再次核验。
       await this.runTask(() => TaskActions.doSign(), "签到");
       await Wait.randomDelay();
       if (isTokenOK) {
-        if (!RunState.pc401) {
-          await this.runTask(() => TaskActions.doRead(), "阅读");
-          await Wait.randomDelay();
-        } else {
-          Notice.log("🟡", "PC会话已过期，跳过阅读任务");
-        }
+        await this.runTask(() => TaskActions.doRead(), "阅读");
+        await Wait.randomDelay();
       }
 
       // 按顺序执行任务，由任务结果决定重试。
@@ -4252,7 +4221,8 @@ Notice:
         const logMsg = RunSummary.format({
           info, startBalance, endBalance, today: RunState.dateNowNum,
           tasks: {
-            signDate: TaskState.signDate, readDate: TaskState.readDate,
+            signDate: TaskState.signDate, appSignDate: TaskState.appSignDate, pcSignDate: TaskState.pcSignDate,
+            readDate: TaskState.readDate,
             promosDate: TaskState.promosDate, streakDays: TaskState.streakDays
           },
           read: { progress: ReadingState.progress, max: ReadingState.max },
