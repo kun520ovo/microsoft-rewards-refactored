@@ -6,7 +6,7 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const scriptPath = process.env.REWARDS_TEST_SCRIPT ||
-  path.resolve(__dirname, '..', '微软积分商城签到（重构版）1.0.3.js');
+  path.resolve(__dirname, '..', '微软积分商城签到（重构版）1.0.4.js');
 const script = fs.readFileSync(scriptPath, 'utf8');
 const today = 20261023;
 
@@ -32,7 +32,7 @@ function harness({ html = page(), storage = {}, appResponse, finalUrl, pageError
     URL, URLSearchParams, setTimeout, clearTimeout, setInterval, clearInterval, crypto: webcrypto,
     location: new URL('https://www.bing.com/'),
     navigator: { userAgent: 'Rewards regression test' },
-    GM_info: { script: { name: 'Rewards regression test', version: '1.0.3' } },
+    GM_info: { script: { name: 'Rewards regression test', version: '1.0.4' } },
     GM_getValue: (key, fallback) => values.has(key) ? structuredClone(values.get(key)) : fallback,
     GM_setValue: (key, value) => values.set(key, structuredClone(value)),
     GM_deleteValue: key => values.delete(key),
