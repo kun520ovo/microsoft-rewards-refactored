@@ -3530,7 +3530,7 @@ Notice:
       }
 
       if (TaskState.pcSignDate === RunState.dateNowNum) {
-        Notice.log("💻", "PC打卡已由官网确认完成（必应搜索连续打卡）");
+        Notice.log("💻", "PC签入成功！");
       } else {
         Notice.log("📅", progress.pc === false
           ? "PC打卡尚未完成，搜索结束后复核"
@@ -3930,7 +3930,7 @@ Notice:
           const pcWasDone = TaskState.pcSignDate === RunState.dateNowNum;
           TaskRecords.updateSignProgress(TaskState, DataParsers.signInProgress(tasks));
           if (!pcWasDone && TaskState.pcSignDate === RunState.dateNowNum) {
-            Notice.log("💻", "PC打卡已由官网确认完成（搜索后复核）");
+            Notice.log("💻", "PC签入成功！");
           }
         }
 

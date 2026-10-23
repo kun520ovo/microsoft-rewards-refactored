@@ -122,7 +122,7 @@ test('搜索后的连签复核确认 PC，保留 App 积分且不重复提交或
   assert.equal(h.api.TaskState.signPoint, 5);
   assert.equal(h.posts().length, 1);
   assert.equal(h.values.get('Config.tasks').signPC, today);
-  assert.ok(h.logs.some(line => line.includes('搜索后复核')));
+  assert.ok(h.logs.some(line => line === '💻 PC签入成功！'));
   assert.match(h.summary(), /^签到\s+✅/);
 });
 
