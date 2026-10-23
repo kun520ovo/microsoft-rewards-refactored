@@ -3518,7 +3518,7 @@ Notice:
       TaskRecords.updateSignProgress(TaskState, progress);
 
       if (TaskState.appSignDate === RunState.dateNowNum) {
-        Notice.log("📱", "App签入已确认，跳过重复提交");
+        Notice.log("📱", "App签入已成功，跳过重复提交");
       } else {
         await Wait.randomDelay();
         const appPoint = await AppSignIn.signApp();
@@ -3530,7 +3530,7 @@ Notice:
       }
 
       if (TaskState.pcSignDate === RunState.dateNowNum) {
-        Notice.log("💻", "PC签入成功！");
+        Notice.log("💻", "pc签入已成功，跳过重复提交");
       } else {
         Notice.log("📅", progress.pc === false
           ? "PC打卡尚未完成，搜索结束后复核"
